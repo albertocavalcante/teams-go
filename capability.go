@@ -27,7 +27,7 @@ const (
 	ReadChatMessages Capability = "read chat messages"
 	// SendChatMessage sends a chat message.
 	SendChatMessage Capability = "send a chat message"
-	// ChangeChat reacts to, edits, or soft-deletes a chat message.
+	// ChangeChat reacts to or soft-deletes a chat message.
 	ChangeChat Capability = "change chat messages"
 	// ListTeams lists the teams the signed-in user belongs to.
 	ListTeams Capability = "list your teams"
