@@ -12,14 +12,14 @@ import (
 	teams "github.com/albertocavalcante/teams-go"
 )
 
-// TestMessageQueryAlwaysFiltersOnTheSortedProperty is the property the whole
-// type exists to guarantee: $filter and $orderby always name the same
-// field, for both Order values, and the fake -- carrying the real Teams
-// constraints -- does not drop the filter for either. The final act proves
+// TestMessageQueryBeforeFiltersOnTheSortedProperty checks that an exclusive
+// upper bound and $orderby name the same field for both Order values. The
+// fake -- carrying the real Teams constraints -- keeps the filter in both
+// cases. The final act proves
 // the constraint is genuinely live by hand-building a mismatched request
 // straight through [teams.Client.Graph] and watching its filter get
 // dropped, which is what [teams.MessageQuery] exists to make unreachable.
-func TestMessageQueryAlwaysFiltersOnTheSortedProperty(t *testing.T) {
+func TestMessageQueryBeforeFiltersOnTheSortedProperty(t *testing.T) {
 	t.Parallel()
 	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -35,7 +35,7 @@ func TestMessageQueryAlwaysFiltersOnTheSortedProperty(t *testing.T) {
 			})
 			client := newTeamsClient(t, server)
 
-			query := teams.MessageQuery{Order: order, Since: since}
+			query := teams.MessageQuery{Order: order, Before: since}
 			for _, err := range client.Messages(context.Background(), "19:abc@thread.v2", query) {
 				if err != nil {
 					t.Fatal(err)
@@ -77,6 +77,74 @@ func TestMessageQueryAlwaysFiltersOnTheSortedProperty(t *testing.T) {
 	}
 	if sawFilter != "" {
 		t.Fatalf("handler saw filter %q, want it dropped because the sort names a different property", sawFilter)
+	}
+}
+
+func TestMessagesSinceFiltersLocallyAndStopsAtOlderMessage(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	server := newTeamsServer(t)
+	requests := 0
+	server.Handle("GET /chats/{chat}/messages", func(r *graphmock.Request) graphmock.Response {
+		requests++
+		if r.Query.Filter != "" {
+			t.Errorf("since sent unsupported server filter: %q", r.Query.Filter)
+		}
+		return graphmock.Collection([]teams.ChatMessage{
+			{ID: "newer", CreatedDateTime: cutoff.Add(time.Second)},
+			{ID: "equal", CreatedDateTime: cutoff},
+			{ID: "older", CreatedDateTime: cutoff.Add(-time.Second)},
+		}, server.Link("/chats/c/messages", "page=2"))
+	})
+	client := newTeamsClient(t, server)
+	var ids []teams.MessageID
+	for message, err := range client.Messages(context.Background(), "c", teams.MessageQuery{Since: cutoff}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, message.ID)
+	}
+	if len(ids) != 2 || ids[0] != "newer" || ids[1] != "equal" {
+		t.Fatalf("message IDs = %v, want [newer equal]", ids)
+	}
+	if requests != 1 {
+		t.Fatalf("made %d requests, want to stop before older pages", requests)
+	}
+}
+
+func TestListMessagesSinceFiltersPageAndEndsWindow(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	server := newTeamsServer(t)
+	server.Handle("GET /chats/{chat}/messages", func(_ *graphmock.Request) graphmock.Response {
+		return graphmock.Collection([]teams.ChatMessage{
+			{ID: "equal", LastModifiedDateTime: cutoff},
+			{ID: "older", LastModifiedDateTime: cutoff.Add(-time.Second)},
+		}, server.Link("/chats/c/messages", "page=2"))
+	})
+	client := newTeamsClient(t, server)
+	page, _, err := client.ListMessages(context.Background(), "c", teams.MessageQuery{Order: teams.ByLastModified, Since: cutoff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Value) != 1 || page.Value[0].ID != "equal" || page.NextLink != "" {
+		t.Fatalf("filtered page = %+v, want equal message and no continuation", page)
+	}
+}
+
+func TestMessagesSinceFailsWhenTimestampIsMissing(t *testing.T) {
+	t.Parallel()
+	server := newTeamsServer(t)
+	server.Handle("GET /chats/{chat}/messages", func(_ *graphmock.Request) graphmock.Response {
+		return graphmock.Collection([]teams.ChatMessage{{ID: "undated"}}, "")
+	})
+	client := newTeamsClient(t, server)
+	var got error
+	for _, err := range client.Messages(context.Background(), "c", teams.MessageQuery{Since: time.Now()}) {
+		got = err
+	}
+	if !errors.Is(got, teams.ErrMissingMessageTimestamp) {
+		t.Fatalf("error = %v, want ErrMissingMessageTimestamp", got)
 	}
 }
 

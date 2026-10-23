@@ -26,7 +26,7 @@ for message, err := range client.Messages(ctx, chatID, teams.MessageQuery{Top: 5
 | Teams and channels | List joined teams and channels; read root messages and replies; post root messages and replies; list channel members |
 | Search and presence | Search messages; read own or another user's presence |
 
-Channel message listings contain roots only. `ChannelMessageQuery.WithReplies` includes the first page of each thread; follow `Client.MoreReplies` when `RepliesNextLink` is set. `MessageQuery` couples the filter and sort property because Graph otherwise silently discards mismatched filters.
+Channel message listings contain roots only and are ordered by the latest change in each entire thread. `ChannelMessageQuery` supports a page size and optional reply expansion; `ReplyQuery` supports a page size. `ChannelMessageQuery.WithReplies` includes the first page of each thread; follow `Client.MoreReplies` when `RepliesNextLink` is set. Chat `MessageQuery` couples the filter and sort property because Graph otherwise silently discards mismatched filters. Its inclusive `Since` bound is applied while paging, since Graph only supports exclusive upper bounds on the chat message timestamps.
 
 Use `Capabilities`, `ScopesFor`, and `NeedsAdminConsent` before asking users for permissions. Several team, channel, and presence reads need tenant administrator consent. The SDK does not perform sign-in or grant permissions.
 

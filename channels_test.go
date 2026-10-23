@@ -138,3 +138,34 @@ func TestMoreRepliesFollowsTheNestedLink(t *testing.T) {
 		t.Fatalf("MoreReplies with no RepliesNextLink yielded %d items, want 0 and no error", count)
 	}
 }
+
+func TestChannelMessageQueriesUseOnlySupportedOptions(t *testing.T) {
+	t.Parallel()
+	server := newTeamsServer(t)
+	server.Handle("GET /teams/{team}/channels/{channel}/messages", func(r *graphmock.Request) graphmock.Response {
+		if r.Query.Top != 25 || r.Query.Raw.Get("$expand") != "replies" {
+			t.Errorf("channel query = %+v, want top=25 and expand=replies", r.Query)
+		}
+		if len(r.Query.OrderBy) != 0 || r.Query.Filter != "" {
+			t.Errorf("channel query sent chat-only options: %+v", r.Query)
+		}
+		return graphmock.Collection([]teams.ChatMessage{}, "")
+	})
+	server.Handle("GET /teams/{team}/channels/{channel}/messages/{message}/replies", func(r *graphmock.Request) graphmock.Response {
+		if r.Query.Top != 25 || len(r.Query.OrderBy) != 0 || r.Query.Filter != "" {
+			t.Errorf("reply query sent unsupported options: %+v", r.Query)
+		}
+		return graphmock.Collection([]teams.ChatMessage{}, "")
+	})
+	client := newTeamsClient(t, server)
+	for _, err := range client.ChannelMessages(context.Background(), "t", "c", teams.ChannelMessageQuery{Top: 25, WithReplies: true}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, err := range client.Replies(context.Background(), "t", "c", "m", teams.ReplyQuery{Top: 25}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

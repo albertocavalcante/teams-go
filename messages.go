@@ -57,11 +57,11 @@ const (
 // happened here."
 var ErrInvertedWindow = errors.New("teams: message window is inverted: Since is after Before")
 
-// MessageQuery selects and windows a chat or channel message listing.
+// MessageQuery selects and windows a chat message listing.
 //
 // # Why Order is one field, not a filter property and a sort property
 //
-// A Teams message listing is indexed on exactly one property at a time, and
+// A chat message listing is indexed on exactly one property at a time, and
 // the service does not tell you when a request asks for two: a $filter on
 // createdDateTime combined with $orderby on lastModifiedDateTime is not
 // refused. It is answered 200 OK, with the filter silently discarded and
@@ -70,33 +70,28 @@ var ErrInvertedWindow = errors.New("teams: message window is inverted: Since is 
 // renders a year of messages as though they were all from today, with
 // nothing in the response shape to suggest anything went wrong.
 //
-// Splitting Order from Since/Before -- as two independent fields a caller
-// could set inconsistently -- would make that mistake something this type
-// permits and even encourages, since the zero value of an unset sort field
-// looks like "no preference" rather than "different from the filter."
-// Folding them into a single Order field removes the inconsistent state
-// from the type entirely: [MessageQuery.Params] always renders $filter and
-// $orderby against the same property, because there is only one property to
-// name. See [FieldLastMessagePreviewCreated] and [ChatQuery] for the same
-// hazard one level up, on the chat listing that orders by a message inside
-// it.
+// Order also selects the property used by Before and Since. Params renders
+// Before as a server filter on that property; Messages and ListMessages
+// enforce Since locally because Graph does not accept an inclusive lower
+// bound for either supported timestamp. See [FieldLastMessagePreviewCreated]
+// and [ChatQuery] for a similar filter/order constraint on chat listings.
 //
 // # Why there is no Select, Expand, Where, or Descending field
 //
-// A chat or channel message listing refuses $select and $expand outright
+// A chat message listing refuses $select and $expand outright
 // with 400 Bad Request -- unlike the filter mismatch above, this one really
 // is an error, which is itself worth knowing, since the two look identical
-// from the caller's side until one of them silently succeeds. (The one
-// exception, expanding replies on a channel listing, is
-// [ChannelMessageQuery.WithReplies].) And the service only ever serves
-// descending order; an ascending $orderby is refused the same way. Fields
+// from the caller's side until one of them silently succeeds. The service
+// only serves descending order; an ascending $orderby is refused. Fields
 // that a request would only be refused for existing are not offered here at
 // all, so the type cannot express the requests that never work.
 type MessageQuery struct {
 	// Order is the property the listing is filtered and sorted on. The zero
 	// value is [ByCreated].
 	Order MessageOrder
-	// Since is an inclusive lower bound on Order. The zero time omits it.
+	// Since is an inclusive lower bound on Order. Graph cannot express this
+	// bound for createdDateTime, so the client stops paging once it reaches
+	// an older message. The zero time omits it.
 	Since time.Time
 	// Before is an exclusive upper bound on Order. The zero time omits it.
 	Before time.Time
@@ -107,25 +102,43 @@ type MessageQuery struct {
 	Custom url.Values
 }
 
-// Params renders the query as Graph query parameters, always filtering and
-// ordering on the same property -- see the type doc for why that coupling
-// is the entire reason this type exists -- and always ordering descending,
-// since ascending is refused.
+// Params renders the server-supported part of the query. Graph supports an
+// exclusive upper bound on either timestamp, but no inclusive lower bound.
+// Messages and ListMessages apply Since after fetching each page.
 func (q MessageQuery) Params() msgraph.Params {
 	field := q.Order.property()
-	var clauses []msgraph.Expr
-	if !q.Since.IsZero() {
-		clauses = append(clauses, msgraph.Ge(field, q.Since))
-	}
+	var before msgraph.Expr
 	if !q.Before.IsZero() {
-		clauses = append(clauses, msgraph.Lt(field, q.Before))
+		before = msgraph.Lt(field, q.Before)
 	}
 	return msgraph.Params{
-		Where:  msgraph.And(clauses...),
+		Where:  before,
 		Sort:   []msgraph.Order{msgraph.Desc(field)},
 		Top:    clampTop(q.Top, MaxMessagePageSize),
 		Custom: q.Custom,
 	}
+}
+
+// ErrMissingMessageTimestamp means a response omitted the property needed to
+// enforce Since. Returning an error avoids silently presenting older messages
+// as though they matched the requested window.
+var ErrMissingMessageTimestamp = errors.New("teams: message has no timestamp for the requested order")
+
+// olderThanSince reports whether a descending listing has reached the end of
+// the requested window. The matching property must be populated by Graph.
+func (q MessageQuery) olderThanSince(message *ChatMessage) (bool, error) {
+	if q.Since.IsZero() {
+		return false, nil
+	}
+	timestamp := message.CreatedDateTime
+	if q.Order == ByLastModified {
+		timestamp = message.LastModifiedDateTime
+	}
+	if timestamp.IsZero() {
+		return false, fmt.Errorf("%w: %s on message %s",
+			ErrMissingMessageTimestamp, q.Order.property(), message.ID)
+	}
+	return timestamp.Before(q.Since), nil
 }
 
 // Validate reports [ErrInvertedWindow] when Since is after Before. Call it
@@ -182,11 +195,31 @@ func (c *Client) Messages(ctx context.Context, chat ChatID, query MessageQuery) 
 	if err := query.Validate(); err != nil {
 		return failed[ChatMessage](err)
 	}
-	return items[ChatMessage](ctx, c, path, query.Params())
+	return func(yield func(ChatMessage, error) bool) {
+		for message, itemErr := range items[ChatMessage](ctx, c, path, query.Params()) {
+			if itemErr != nil {
+				yield(ChatMessage{}, itemErr)
+				return
+			}
+			older, err := query.olderThanSince(&message)
+			if err != nil {
+				yield(ChatMessage{}, err)
+				return
+			}
+			if older {
+				return
+			}
+			if !yield(message, nil) {
+				return
+			}
+		}
+	}
 }
 
 // ListMessages returns one page of a chat's messages plus the
-// [msgraph.Response] metadata. Use [Client.Messages] to page automatically.
+// [msgraph.Response] metadata. When Since is set, it removes older items and
+// clears NextLink once the descending page crosses that bound. Use
+// [Client.Messages] to page automatically.
 //
 // Needs [ReadChatMessages].
 func (c *Client) ListMessages(ctx context.Context, chat ChatID, query MessageQuery) (msgraph.Page[ChatMessage], *msgraph.Response, error) {
@@ -197,8 +230,25 @@ func (c *Client) ListMessages(ctx context.Context, chat ChatID, query MessageQue
 	if err := query.Validate(); err != nil {
 		return msgraph.Page[ChatMessage]{}, nil, err
 	}
-	return msgraph.Do[msgraph.Page[ChatMessage]](ctx, c.graph,
+	page, response, err := msgraph.Do[msgraph.Page[ChatMessage]](ctx, c.graph,
 		c.request(http.MethodGet, path, query.Params(), nil))
+	if err != nil || query.Since.IsZero() {
+		return page, response, err
+	}
+	filtered := page.Value[:0]
+	for i := range page.Value {
+		older, filterErr := query.olderThanSince(&page.Value[i])
+		if filterErr != nil {
+			return msgraph.Page[ChatMessage]{}, response, filterErr
+		}
+		if older {
+			page.NextLink = ""
+			break
+		}
+		filtered = append(filtered, page.Value[i])
+	}
+	page.Value = filtered
+	return page, response, nil
 }
 
 // GetMessage fetches a single chat message.
