@@ -43,7 +43,7 @@ func TestEmptyIdentifiersAreRefusedBeforeARequest(t *testing.T) {
 		{"Channels with empty team", firstIterErr(client.Channels(ctx, "", teams.ChannelQuery{}))},
 		{"ChannelMessages with empty team", firstIterErr(client.ChannelMessages(ctx, "", "ch1", teams.ChannelMessageQuery{}))},
 		{"ChannelMessages with empty channel", firstIterErr(client.ChannelMessages(ctx, "t1", "", teams.ChannelMessageQuery{}))},
-		{"Replies with empty message", firstIterErr(client.Replies(ctx, "t1", "ch1", "", teams.MessageQuery{}))},
+		{"Replies with empty message", firstIterErr(client.Replies(ctx, "t1", "ch1", "", teams.ReplyQuery{}))},
 		{"SendChannelMessage with empty channel", errFrom3(client.SendChannelMessage(ctx, "t1", "", draft))},
 		{"ReplyToChannelMessage with empty message", errFrom3(client.ReplyToChannelMessage(ctx, "t1", "ch1", "", draft))},
 		{"ChannelMembers with empty channel", firstIterErr(client.ChannelMembers(ctx, "t1", ""))},

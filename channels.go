@@ -71,10 +71,12 @@ func (q ChannelQuery) Params() msgraph.Params {
 	}
 }
 
-// ChannelMessageQuery selects, windows, and orders a channel message
-// listing.
+// ChannelMessageQuery selects a page of root channel messages. Graph orders
+// roots by the last modification of the entire reply chain and does not
+// support the chat listing's $filter or $orderby options.
 type ChannelMessageQuery struct {
-	MessageQuery
+	// Top asks for a page size, clamped to [MaxMessagePageSize].
+	Top int
 	// WithReplies expands each root message's first page of replies. This is
 	// the one $expand a channel message listing accepts; every other
 	// $select or $expand is refused with 400, same as on a chat message
@@ -86,11 +88,24 @@ type ChannelMessageQuery struct {
 
 // Params renders the query as Graph query parameters.
 func (q ChannelMessageQuery) Params() msgraph.Params {
-	params := q.MessageQuery.Params()
+	params := msgraph.Params{Top: clampTop(q.Top, MaxMessagePageSize)}
 	if q.WithReplies {
 		params.Expand = append(params.Expand, "replies")
 	}
 	return params
+}
+
+// ReplyQuery selects a page of replies. The endpoint supports only $top;
+// sorting and date filters from [MessageQuery] are not valid here.
+type ReplyQuery struct {
+	// Top asks for a page size, clamped to [MaxMessagePageSize]. Zero uses
+	// the service default.
+	Top int
+}
+
+// Params renders the reply page size as Graph query parameters.
+func (q ReplyQuery) Params() msgraph.Params {
+	return msgraph.Params{Top: clampTop(q.Top, MaxMessagePageSize)}
 }
 
 // teamChannelsPath returns the channel collection path for a team.
@@ -150,9 +165,6 @@ func (c *Client) ChannelMessages(ctx context.Context, team TeamID, channel Chann
 	if err != nil {
 		return failed[ChatMessage](err)
 	}
-	if err := query.Validate(); err != nil {
-		return failed[ChatMessage](err)
-	}
 	return items[ChatMessage](ctx, c, path+"/messages", query.Params())
 }
 
@@ -163,16 +175,13 @@ func (c *Client) ChannelMessages(ctx context.Context, team TeamID, channel Chann
 // [Client.ReplyToChannelMessage].
 //
 // Needs [ReadChannelMessages].
-func (c *Client) Replies(ctx context.Context, team TeamID, channel ChannelID, message MessageID, query MessageQuery) iter.Seq2[ChatMessage, error] {
+func (c *Client) Replies(ctx context.Context, team TeamID, channel ChannelID, message MessageID, query ReplyQuery) iter.Seq2[ChatMessage, error] {
 	path, err := teamChannelPath(team, channel)
 	if err != nil {
 		return failed[ChatMessage](err)
 	}
 	if strings.TrimSpace(message.String()) == "" {
 		return failed[ChatMessage](fmt.Errorf("%w: message id", ErrEmptyID))
-	}
-	if err := query.Validate(); err != nil {
-		return failed[ChatMessage](err)
 	}
 	return items[ChatMessage](ctx, c, path+"/messages/"+escapeID(message.String())+"/replies", query.Params())
 }
