@@ -28,6 +28,8 @@ for message, err := range client.Messages(ctx, chatID, teams.MessageQuery{Top: 5
 
 Channel message listings contain roots only and are ordered by the latest change in each entire thread. `ChannelMessageQuery` supports a page size and optional reply expansion; `ReplyQuery` supports a page size. `ChannelMessageQuery.WithReplies` includes the first page of each thread; follow `Client.MoreReplies` when `RepliesNextLink` is set. Chat `MessageQuery` couples the filter and sort property because Graph otherwise silently discards mismatched filters. Its inclusive `Since` bound is applied while paging, since Graph only supports exclusive upper bounds on the chat message timestamps.
 
+When upgrading from v0.1.1, replace `ChannelMessageQuery{MessageQuery: MessageQuery{Top: n}}` with `ChannelMessageQuery{Top: n}` and pass `ReplyQuery` to `Client.Replies`. Channel endpoints cannot use chat date filters or sorting.
+
 Use `Capabilities`, `ScopesFor`, and `NeedsAdminConsent` before asking users for permissions. Several team, channel, and presence reads need tenant administrator consent. The SDK does not perform sign-in or grant permissions.
 
 The SDK does not currently create chats or teams, manage memberships, download hosted content, or model meetings, calls, tabs, or Shifts. These are separate Graph areas with different contracts and permissions.

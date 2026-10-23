@@ -89,9 +89,9 @@ type MessageQuery struct {
 	// Order is the property the listing is filtered and sorted on. The zero
 	// value is [ByCreated].
 	Order MessageOrder
-	// Since is an inclusive lower bound on Order. Graph cannot express this
-	// bound for createdDateTime, so the client stops paging once it reaches
-	// an older message. The zero time omits it.
+	// Since is an inclusive lower bound on Order. Graph cannot express an
+	// inclusive lower bound for either timestamp, so the client stops paging
+	// once it reaches an older message. The zero time omits it.
 	Since time.Time
 	// Before is an exclusive upper bound on Order. The zero time omits it.
 	Before time.Time
